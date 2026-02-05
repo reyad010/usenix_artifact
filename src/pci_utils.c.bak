@@ -1,0 +1,181 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdbool.h>
+#include <cpuid.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#include "pci_defs.h"
+
+// SKX/CLX: sudo lspci -vnn | grep 8086:2014 -A 2
+// ICX: sudo lspci -vnn | grep 8086:3450 -A 2
+int IMC_BUS_Socket[NUM_SOCKETS] = {0x24, 0x5a, 0x9a, 0xda};
+int IMC_Device_Channel[6] = {0x0a, 0x0a, 0x0b, 0x0c, 0x0c, 0x0d};
+int IMC_Function_Channel[6] = {0x2, 0x6, 0x2, 0x2, 0x6, 0x2};
+int IMC_PmonCtl_Offset[5] = {0xd8, 0xdc, 0xe0, 0xe4, 0xf0}; 
+int IMC_PmonCtr_Offset[5] = {0xa0, 0xa8, 0xb0, 0xb8, 0xd0};
+
+
+#define DRV_IS_PCI_VENDOR_ID_INTEL 0x8086
+#define VENDOR_ID_MASK 0x0000FFFF
+#define DEVICE_ID_MASK 0xFFFF0000
+#define DEVICE_ID_BITSHIFT 16
+#define PCI_ENABLE 0x80000000
+#define MAX_BUS 256
+#define MAX_DEVICE 32
+#define MAX_FUNCTION 8
+
+#define FORM_PCI_ADDR(bus, dev, fun, off) (((PCI_ENABLE)) | \
+ ((bus & 0xFF) << 16)| \
+ ((dev & 0x1F) << 11)| \
+ ((fun & 0x07) << 8) | \
+ ((off & 0xFF) << 0))
+
+#define SKYLAKE_SERVER_SOCKETID_UBOX_DID 0x2014
+#define UNC_SOCKETID_UBOX_LNID_OFFSET 0xC0
+#define UNC_SOCKETID_UBOX_GID_OFFSET 0xD4
+
+// extern uint8_t UNC_UBOX_package_to_bus_map[MAX_SOCKETS]; // Map socket package ID to PCI bus number
+
+uint32_t PCI_cfg_index(unsigned int Bus, unsigned int Device, unsigned int Function, unsigned int Offset)
+{
+    uint32_t byteaddress;
+    uint32_t index;
+    assert (Device >= 0);
+    assert (Function >= 0);
+    assert (Offset >= 0);
+    assert (Device < (1<<5));
+    assert (Function < (1<<3));
+    assert (Offset < (1<<12));
+    byteaddress = (Bus<<20) | (Device<<15) | (Function<<12) | Offset;
+    index = byteaddress / 4;
+    return ( index );
+}
+/**
+ * Detects and maps the UBOX package-to-bus mapping for socket identification.
+ */
+void detect_ubox_socket_mapping() {
+  char filename[100];
+	sprintf(filename,"/dev/mem");
+	int mem_fd;
+	mem_fd = open(filename, O_RDWR);
+	if (mem_fd == -1) {
+		fprintf(stderr,"ERROR %s when trying to open %s\n",strerror(errno),filename);
+		exit(-1);
+	}
+
+	int map_prot = PROT_READ | PROT_WRITE;
+  unsigned int *mmconfig_ptr;
+  unsigned long mmconfig_base=0x80000000; // cat /proc/iomem|grep -i ecam
+  unsigned long mmconfig_size=0x10000000;
+  
+	mmconfig_ptr = mmap(NULL, mmconfig_size, map_prot, MAP_SHARED, mem_fd, mmconfig_base);
+    if (mmconfig_ptr == MAP_FAILED) {
+        fprintf(stderr,"cannot mmap base of PCI configuration space from /dev/mem: address %lx\n", mmconfig_base);
+        exit(2);
+    }
+    close(mem_fd);      // OK to close file after mmap() -- the mapping persists until unmap() or program exit
+
+
+    uint32_t pci_address, value, vendor_id, device_id, index;
+    uint32_t nodeid, mapping, gid;
+
+    // Initialize package-to-bus map to invalid state
+    // for (int i = 0; i < MAX_SOCKETS; i++) {
+    //     UNC_UBOX_package_to_bus_map[i] = 0xFF; // Default invalid value
+    // }
+
+    // Iterate through PCI bus, devices, and functions
+    for (int bus_no = 0; bus_no < MAX_BUS; bus_no++) {
+        for (int device_no = 0; device_no < MAX_DEVICE; device_no++) {
+            for (int function_no = 0; function_no < MAX_FUNCTION; function_no++) {
+                // Read PCI configuration space to identify devices
+                index = PCI_cfg_index(bus_no, device_no, function_no, 0);
+                value = mmconfig_ptr[index];
+
+                vendor_id = value & VENDOR_ID_MASK;
+                device_id = (value & DEVICE_ID_MASK) >> DEVICE_ID_BITSHIFT;
+
+                // Check if it's an Intel device
+                if (vendor_id != DRV_IS_PCI_VENDOR_ID_INTEL) {
+                    continue;
+                }
+
+                // Check if it's the UBOX device for Skylake Server
+                if (device_id == SKYLAKE_SERVER_SOCKETID_UBOX_DID) {
+                    // Read Local Node ID (LNID)
+                    index = PCI_cfg_index(bus_no, device_no, function_no, UNC_SOCKETID_UBOX_LNID_OFFSET);
+                    value = mmconfig_ptr[index];
+                    nodeid = value & 0x00000007;
+
+                    // Read Node ID Mapping Register (GID)
+                    index = PCI_cfg_index(bus_no, device_no, function_no, UNC_SOCKETID_UBOX_GID_OFFSET);
+                    value = mmconfig_ptr[index];
+                    mapping = value;
+
+                    // Find the corresponding GID (socket package)
+                    for (gid = 0; gid < MAX_SOCKETS; gid++) {
+                        if (nodeid == ((mapping >> (3 * gid)) & 0x7)) {
+                            // UNC_UBOX_package_to_bus_map[gid] = bus_no;
+                            printf("Socket %d: Bus %x\n", gid, bus_no);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    index = PCI_cfg_index(2, 10, 2, 0);
+    value = mmconfig_ptr[index];
+    printf("Bus 2 device 10 function 2 offset 0 value %x\n",value);
+
+}
+
+
+
+
+  char filename[100];
+	sprintf(filename,"/dev/mem");
+	int mem_fd;
+	mem_fd = open(filename, O_RDWR);
+	if (mem_fd == -1) {
+		fprintf(stderr,"ERROR %s when trying to open %s\n",strerror(errno),filename);
+		exit(-1);
+	}
+
+	int map_prot = PROT_READ | PROT_WRITE;
+  unsigned int *mmconfig_ptr;
+  unsigned long mmconfig_base=0x80000000; // cat /proc/iomem|grep -i ecam
+  unsigned long mmconfig_size=0x10000000;
+  
+	mmconfig_ptr = mmap(NULL, mmconfig_size, map_prot, MAP_SHARED, mem_fd, mmconfig_base);
+    if (mmconfig_ptr == MAP_FAILED) {
+        fprintf(stderr,"cannot mmap base of PCI configuration space from /dev/mem: address %lx\n", mmconfig_base);
+        exit(2);
+    }
+    close(mem_fd);      // OK to close file after mmap() -- the mapping persists until unmap() or program exit
+
+    uint32_t bus, device, function, offset, ctl_offset, ctr_offset, value, index;
+
+    bus = 0x00;
+    device = 0x5;
+    function = 0x0;
+    offset = 0x0;
+    index = PCI_cfg_index(bus, device, function, offset);
+    value = mmconfig_ptr[index];
+
+    if (value != 0x20248086) {
+      fprintf(stderr,"ERROR: Bus %x device %x function %x offset %x expected %x, found %x\n",bus,device,function,offset,0x20248086,value);
+      exit(3);
+    }
+    printf("Bus %x device %x function %x offset %x value %x\n",bus,device,function,offset,value);    
+
+    detect_ubox_socket_mapping();
+
+  exit(0);

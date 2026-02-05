@@ -1,0 +1,86 @@
+#define ARCH 2
+
+#include <stdint.h>
+
+#if ARCH == 2
+
+#define NUM_SOCKETS 4
+
+#define NUM_IMC_BOXES 2
+#define NUM_IMC_CHANNELS 3
+#define NUM_IMC_COUNTERS 4
+
+#define NUM_M2M_BOXES 2
+#define NUM_M2M_COUNTERS 4
+
+// grep ECAM /proc/iomem | awk -F- '{print $1}'
+#define MMCONFIG_BASE 0x80000000
+// grep ECAM /proc/iomem | awk -F- '{print $2}'
+#define MMCONFIG_BOUND 0x8FFFFFFF
+#define MMCONFIG_SIZE (MMCONFIG_BOUND - MMCONFIG_BASE + 1)
+
+#define PCI_INTEL_VENDOR_ID 0x8086 // DRV_IS_PCI_VENDOR_ID_INTEL
+#define PCI_PMON_M2M_DEVICE_ID 0x2066 // Table 1-13 
+#define SERVER_SOCKETID_UBOX_DID 0x2014
+
+// --------------------------------------
+// M2M
+// --------------------------------------
+
+#define PCI_PMON_M2M_UNIT_CTL 0x258
+#define PCI_PMON_M2M_UNIT_STATUS 0x260
+
+#define PCI_PMON_M2M_CTR_BASE 0x200
+#define PCI_PMON_M2M_CTL_BASE 0x228
+
+#define PCI_M2M_REG(reg, n) \
+	(PCI_PMON_M2M_##reg##_BASE + (n) * 0x8)
+
+#define M2M_CTL_EVENT 0
+#define M2M_CTL_UMASK 8
+#define M2M_CTL_RESET 17
+#define M2M_CTL_ENABLE 22
+
+#define M2M_CTL_EXT(event, umask) \
+	( 1L << M2M_CTL_ENABLE \
+	| (umask) << M2M_CTL_UMASK | (event) << M2M_CTL_EVENT)
+
+#define M2M_CTL(event, umask) M2M_CTL_EXT(event, umask)
+
+
+#define PCI_PMON_M2M_ADDRMATCH 0x268
+#define PCI_PMON_M2M_ADDRMASK 0x270
+#define PCI_PMON_M2M_OPCODE_MM 0x278
+
+
+extern uint32_t  PCI_PMON_M2M_device[NUM_M2M_BOXES];
+extern uint32_t  PCI_PMON_M2M_function[NUM_M2M_BOXES];
+
+// --------------------------------------
+// IMC
+// --------------------------------------
+
+extern uint32_t PCI_PMON_IMC_device;
+extern uint32_t PCI_PMON_IMC_function;
+
+
+
+void pci_cfg_init(void);
+void pci_cfg_cleanup(void);
+
+volatile uint32_t *pci_cfg_ptr(uint32_t bus, uint32_t device, uint32_t function, uint32_t offset);
+
+void pci_cfg_w64(uint32_t bus, uint32_t device, uint32_t function, uint32_t offset, uint64_t val);
+void pci_cfg_w32(uint32_t bus, uint32_t device, uint32_t function, uint32_t offset, uint32_t val);
+
+uint64_t pci_cfg_r64(uint32_t bus, uint32_t device, uint32_t function, uint32_t offset);
+uint32_t pci_cfg_r32(uint32_t bus, uint32_t device, uint32_t function, uint32_t offset);
+
+// ---
+
+void pci_imc_w64(uint32_t socket, uint32_t imc, uint32_t offset, uint64_t val);
+void pci_imc_w32(uint32_t socket, uint32_t imc, uint32_t offset, uint32_t val);
+uint64_t pci_imc_r64(uint32_t socket, uint32_t imc, uint32_t offset);
+uint32_t pci_imc_r32(uint32_t socket, uint32_t imc, uint32_t offset);
+
+#endif

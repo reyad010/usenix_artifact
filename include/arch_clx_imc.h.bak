@@ -1,0 +1,11 @@
+#ifndef ARCH_DETAIL_CASCADELAKEX_IMC_H
+#define ARCH_DETAIL_CASCADELAKEX_IMC_H
+
+#include <stdint.h>
+
+/* IMC Counter Configs*/
+# define NUM_IMC_CHANNELS 6			// includes channels on all IMCs in a socket
+# define NUM_IMC_COUNTERS 5			// 0-3 are the 4 programmable counters, 4 is the fixed-function DCLK counter
+
+
+#endif // ARCH_DETAIL_CASCADELAKEX_IMC_H
